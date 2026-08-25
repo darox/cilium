@@ -85,6 +85,15 @@ type CiliumClusterwideNetworkPolicyList struct {
 // Parse parses a CiliumClusterwideNetworkPolicy and returns a list of cilium
 // policy rules.
 func (r *CiliumClusterwideNetworkPolicy) Parse(logger *slog.Logger, clusterName string) (api.Rules, error) {
+	return r.parse(logger, clusterName, nil)
+}
+
+// ParseWithConfig parses a CiliumClusterwideNetworkPolicy using config for validation.
+func (r *CiliumClusterwideNetworkPolicy) ParseWithConfig(logger *slog.Logger, clusterName string, config api.PolicyValidationConfig) (api.Rules, error) {
+	return r.parse(logger, clusterName, &config)
+}
+
+func (r *CiliumClusterwideNetworkPolicy) parse(logger *slog.Logger, clusterName string, config *api.PolicyValidationConfig) (api.Rules, error) {
 	if r.ObjectMeta.Name == "" {
 		return nil, NewErrParse("CiliumClusterwideNetworkPolicy must have name")
 	}
@@ -99,7 +108,7 @@ func (r *CiliumClusterwideNetworkPolicy) Parse(logger *slog.Logger, clusterName 
 	}
 
 	if r.Spec != nil {
-		if err := r.Spec.Sanitize(); err != nil {
+		if err := sanitizeRule(r.Spec, config); err != nil {
 			return nil, NewErrParse(fmt.Sprintf("Invalid CiliumClusterwideNetworkPolicy spec: %s", err))
 		}
 		cr := k8sCiliumUtils.ParseToCiliumRule(logger, clusterName, "", name, uid, r.Spec)
@@ -107,7 +116,7 @@ func (r *CiliumClusterwideNetworkPolicy) Parse(logger *slog.Logger, clusterName 
 	}
 	if r.Specs != nil {
 		for _, rule := range r.Specs {
-			if err := rule.Sanitize(); err != nil {
+			if err := sanitizeRule(rule, config); err != nil {
 				return nil, NewErrParse(fmt.Sprintf("Invalid CiliumClusterwideNetworkPolicy specs: %s", err))
 			}
 			cr := k8sCiliumUtils.ParseToCiliumRule(logger, clusterName, "", name, uid, rule)

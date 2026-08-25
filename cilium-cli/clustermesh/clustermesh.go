@@ -42,6 +42,7 @@ import (
 	cmk8s "github.com/cilium/cilium/pkg/k8s"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/lock"
+	"github.com/cilium/cilium/pkg/option"
 	"github.com/cilium/cilium/pkg/policy/api"
 	"github.com/cilium/cilium/pkg/policy/types"
 	"github.com/cilium/cilium/pkg/versioncheck"
@@ -1850,12 +1851,24 @@ type PolicyDefaultLocalClusterInspectResult struct {
 	NetworkPolicies                  map[string]bool `json:"networkPolicies,omitempty"`
 }
 
-func PolicyDefaultLocalClusterInspect(ctx context.Context, k8sClient *k8s.Client, namespace string) (*PolicyDefaultLocalClusterInspectResult, error) {
+func PolicyDefaultLocalClusterInspect(ctx context.Context, k8sClient *k8s.Client, ciliumNamespace, namespace string) (*PolicyDefaultLocalClusterInspectResult, error) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	res := PolicyDefaultLocalClusterInspectResult{
 		CiliumNetworkPolicies:            map[string]bool{},
 		CiliumClusterWideNetworkPolicies: map[string]bool{},
 		NetworkPolicies:                  map[string]bool{},
+	}
+
+	cm, err := k8sClient.GetConfigMap(ctx, ciliumNamespace, defaults.ConfigMapName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("unable to retrieve ConfigMap %q: %w", defaults.ConfigMapName, err)
+	}
+	policyConfig := api.PolicyValidationConfig{}
+	if value, ok := cm.Data[option.EnableNodeSelectorLabels]; ok {
+		policyConfig.EnableNodeSelectorLabels, err = strconv.ParseBool(value)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse %q from ConfigMap %q: %w", option.EnableNodeSelectorLabels, defaults.ConfigMapName, err)
+		}
 	}
 
 	nps, err := k8sClient.ListSlimNetworkPolicies(ctx, namespace, metav1.ListOptions{})
@@ -1880,11 +1893,11 @@ func PolicyDefaultLocalClusterInspect(ctx context.Context, k8sClient *k8s.Client
 		return nil, fmt.Errorf("Error listing Cilium network policies: %w", err)
 	}
 	for _, cnp := range cnps.Items {
-		rulesAny, err := cnp.Parse(logger, cmtypes.PolicyAnyCluster)
+		rulesAny, err := cnp.ParseWithConfig(logger, cmtypes.PolicyAnyCluster, policyConfig)
 		if err != nil {
 			return nil, fmt.Errorf("Error parsing Cilium network policies: %w", err)
 		}
-		rulesLocal, err := cnp.Parse(logger, "some-cluster")
+		rulesLocal, err := cnp.ParseWithConfig(logger, "some-cluster", policyConfig)
 		if err != nil {
 			return nil, fmt.Errorf("Error parsing Cilium network policies: %w", err)
 		}
@@ -1898,11 +1911,11 @@ func PolicyDefaultLocalClusterInspect(ctx context.Context, k8sClient *k8s.Client
 			return nil, fmt.Errorf("Error listing Cilium Cluster Wide network policies: %w", err)
 		}
 		for _, ccnp := range ccnps.Items {
-			rulesAny, err := ccnp.Parse(logger, cmtypes.PolicyAnyCluster)
+			rulesAny, err := ccnp.ParseWithConfig(logger, cmtypes.PolicyAnyCluster, policyConfig)
 			if err != nil {
 				return nil, fmt.Errorf("Error parsing Cilium Cluster Wide network policies: %w", err)
 			}
-			rulesLocal, err := ccnp.Parse(logger, "some-cluster")
+			rulesLocal, err := ccnp.ParseWithConfig(logger, "some-cluster", policyConfig)
 			if err != nil {
 				return nil, fmt.Errorf("Error parsing Cilium Cluster Wide network policies: %w", err)
 			}
