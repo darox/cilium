@@ -165,6 +165,15 @@ func (r *CiliumNetworkPolicy) SetDerivedPolicyStatus(derivativePolicyName string
 // Parse parses a CiliumNetworkPolicy and returns a list of cilium policy
 // rules.
 func (r *CiliumNetworkPolicy) Parse(logger *slog.Logger, clusterName string) (api.Rules, error) {
+	return r.parse(logger, clusterName, nil)
+}
+
+// ParseWithConfig parses a CiliumNetworkPolicy using config for validation.
+func (r *CiliumNetworkPolicy) ParseWithConfig(logger *slog.Logger, clusterName string, config api.PolicyValidationConfig) (api.Rules, error) {
+	return r.parse(logger, clusterName, &config)
+}
+
+func (r *CiliumNetworkPolicy) parse(logger *slog.Logger, clusterName string, config *api.PolicyValidationConfig) (api.Rules, error) {
 	if r.ObjectMeta.Name == "" {
 		return nil, NewErrParse("CiliumNetworkPolicy must have name")
 	}
@@ -181,7 +190,7 @@ func (r *CiliumNetworkPolicy) Parse(logger *slog.Logger, clusterName string) (ap
 			Specs:      r.Specs,
 			Status:     r.Status,
 		}
-		return ccnp.Parse(logger, clusterName)
+		return ccnp.parse(logger, clusterName, config)
 	}
 	name := r.ObjectMeta.Name
 	uid := r.ObjectMeta.UID
@@ -193,7 +202,7 @@ func (r *CiliumNetworkPolicy) Parse(logger *slog.Logger, clusterName string) (ap
 	}
 
 	if r.Spec != nil {
-		if err := r.Spec.Sanitize(); err != nil {
+		if err := sanitizeRule(r.Spec, config); err != nil {
 			return nil, NewErrParse(fmt.Sprintf("Invalid CiliumNetworkPolicy spec: %s", err))
 		}
 		if r.Spec.NodeSelector.LabelSelector != nil {
@@ -204,7 +213,7 @@ func (r *CiliumNetworkPolicy) Parse(logger *slog.Logger, clusterName string) (ap
 	}
 	if r.Specs != nil {
 		for _, rule := range r.Specs {
-			if err := rule.Sanitize(); err != nil {
+			if err := sanitizeRule(rule, config); err != nil {
 				return nil, NewErrParse(fmt.Sprintf("Invalid CiliumNetworkPolicy specs: %s", err))
 			}
 			if rule.NodeSelector.LabelSelector != nil {
@@ -216,6 +225,13 @@ func (r *CiliumNetworkPolicy) Parse(logger *slog.Logger, clusterName string) (ap
 	}
 
 	return retRules, nil
+}
+
+func sanitizeRule(rule *api.Rule, config *api.PolicyValidationConfig) error {
+	if config == nil {
+		return rule.Sanitize()
+	}
+	return rule.SanitizeWithConfig(*config)
 }
 
 // GetIdentityLabels returns all rule labels in the CiliumNetworkPolicy.

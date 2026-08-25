@@ -30,6 +30,11 @@ var (
 	enableDefaultDenyDefault = true
 )
 
+// PolicyValidationConfig controls validation that depends on Cilium configuration.
+type PolicyValidationConfig struct {
+	EnableNodeSelectorLabels bool
+}
+
 // Sanitize validates and sanitizes a policy rule. Minor edits such as capitalization
 // of the protocol name are automatically fixed up.
 // As part of `EndpointSelector` sanitization we also convert the label keys to internal
@@ -40,6 +45,13 @@ var (
 // Note: this function is called from both the operator and the agent;
 // make sure any configuration flags are bound in **both** binaries.
 func (r *Rule) Sanitize() error {
+	return r.SanitizeWithConfig(PolicyValidationConfig{
+		EnableNodeSelectorLabels: option.Config.EnableNodeSelectorLabels,
+	})
+}
+
+// SanitizeWithConfig validates and sanitizes a policy rule using config.
+func (r *Rule) SanitizeWithConfig(config PolicyValidationConfig) error {
 	if len(r.Ingress) == 0 && len(r.IngressDeny) == 0 && len(r.Egress) == 0 && len(r.EgressDeny) == 0 {
 		return fmt.Errorf("rule must have at least one of Ingress, IngressDeny, Egress, EgressDeny")
 	}
@@ -85,25 +97,25 @@ func (r *Rule) Sanitize() error {
 	}
 
 	for i := range r.Ingress {
-		if err := r.Ingress[i].sanitize(hostPolicy); err != nil {
+		if err := r.Ingress[i].sanitize(hostPolicy, config); err != nil {
 			return err
 		}
 	}
 
 	for i := range r.IngressDeny {
-		if err := r.IngressDeny[i].sanitize(); err != nil {
+		if err := r.IngressDeny[i].sanitize(config); err != nil {
 			return err
 		}
 	}
 
 	for i := range r.Egress {
-		if err := r.Egress[i].sanitize(hostPolicy); err != nil {
+		if err := r.Egress[i].sanitize(hostPolicy, config); err != nil {
 			return err
 		}
 	}
 
 	for i := range r.EgressDeny {
-		if err := r.EgressDeny[i].sanitize(); err != nil {
+		if err := r.EgressDeny[i].sanitize(config); err != nil {
 			return err
 		}
 	}
@@ -122,14 +134,14 @@ func countL7Rules(ports []PortRule) map[string]int {
 	return result
 }
 
-func (i *IngressRule) sanitize(hostPolicy bool) error {
+func (i *IngressRule) sanitize(hostPolicy bool, config PolicyValidationConfig) error {
 	l7Members := countL7Rules(i.ToPorts)
 	l7IngressSupport := map[string]bool{
 		"DNS":  false,
 		"HTTP": true,
 	}
 
-	if err := i.IngressCommonRule.sanitize(); err != nil {
+	if err := i.IngressCommonRule.sanitize(config); err != nil {
 		return err
 	}
 
@@ -169,8 +181,8 @@ func (i *IngressRule) sanitize(hostPolicy bool) error {
 	return nil
 }
 
-func (i *IngressDenyRule) sanitize() error {
-	if err := i.IngressCommonRule.sanitize(); err != nil {
+func (i *IngressDenyRule) sanitize(config PolicyValidationConfig) error {
+	if err := i.IngressCommonRule.sanitize(config); err != nil {
 		return err
 	}
 
@@ -197,7 +209,7 @@ func (i *IngressDenyRule) sanitize() error {
 	return nil
 }
 
-func (i *IngressCommonRule) sanitize() error {
+func (i *IngressCommonRule) sanitize(config PolicyValidationConfig) error {
 	l3Members := map[string]int{
 		"FromEndpoints": len(i.FromEndpoints),
 		"FromCIDR":      len(i.FromCIDR),
@@ -217,7 +229,7 @@ func (i *IngressCommonRule) sanitize() error {
 
 	var retErr error
 
-	if len(i.FromNodes) > 0 && !option.Config.EnableNodeSelectorLabels {
+	if len(i.FromNodes) > 0 && !config.EnableNodeSelectorLabels {
 		retErr = ErrFromToNodesRequiresNodeSelectorOption
 	}
 
@@ -289,7 +301,7 @@ func countNonGeneratedEndpoints(s []EndpointSelector) int {
 	return n
 }
 
-func (e *EgressRule) sanitize(hostPolicy bool) error {
+func (e *EgressRule) sanitize(hostPolicy bool, config PolicyValidationConfig) error {
 	l3Members := e.l3Members()
 	l3DependentL4Support := e.l3DependentL4Support()
 	l7Members := countL7Rules(e.ToPorts)
@@ -298,7 +310,7 @@ func (e *EgressRule) sanitize(hostPolicy bool) error {
 		"HTTP": !hostPolicy,
 	}
 
-	if err := e.EgressCommonRule.sanitize(l3Members); err != nil {
+	if err := e.EgressCommonRule.sanitize(l3Members, config); err != nil {
 		return err
 	}
 
@@ -363,11 +375,11 @@ func (e *EgressRule) l3DependentL4Support() map[string]bool {
 	return l3DependentL4Support
 }
 
-func (e *EgressDenyRule) sanitize() error {
+func (e *EgressDenyRule) sanitize(config PolicyValidationConfig) error {
 	l3Members := e.l3Members()
 	l3DependentL4Support := e.l3DependentL4Support()
 
-	if err := e.EgressCommonRule.sanitize(l3Members); err != nil {
+	if err := e.EgressCommonRule.sanitize(l3Members, config); err != nil {
 		return err
 	}
 
@@ -408,7 +420,7 @@ func (e *EgressDenyRule) l3DependentL4Support() map[string]bool {
 	return e.EgressCommonRule.l3DependentL4Support()
 }
 
-func (e *EgressCommonRule) sanitize(l3Members map[string]int) error {
+func (e *EgressCommonRule) sanitize(l3Members map[string]int, config PolicyValidationConfig) error {
 	for m1 := range l3Members {
 		for m2 := range l3Members {
 			if m2 != m1 && l3Members[m1] > 0 && l3Members[m2] > 0 {
@@ -419,7 +431,7 @@ func (e *EgressCommonRule) sanitize(l3Members map[string]int) error {
 
 	var retErr error
 
-	if len(e.ToNodes) > 0 && !option.Config.EnableNodeSelectorLabels {
+	if len(e.ToNodes) > 0 && !config.EnableNodeSelectorLabels {
 		retErr = ErrFromToNodesRequiresNodeSelectorOption
 	}
 

@@ -11,10 +11,11 @@ cilium clustermesh inspect-policy-default-local-cluster [flags]
 ### Options
 
 ```
-  -A, --all-namespaces     If present, list the resources across all namespace. Namespace in current context or specified with --namespace is ignored.
-  -h, --help               help for inspect-policy-default-local-cluster
-  -n, --namespace string   Namespace used for listing resources
-  -o, --output string      Output format. One of: json, summary (default "summary")
+  -A, --all-namespaces            If present, list the resources across all namespace. Namespace in current context or specified with --namespace is ignored.
+      --cilium-namespace string   Namespace Cilium is running in
+  -h, --help                      help for inspect-policy-default-local-cluster
+  -n, --namespace string          Namespace used for listing resources
+  -o, --output string             Output format. One of: json, summary (default "summary")
 ```
 
 ### Options inherited from parent commands

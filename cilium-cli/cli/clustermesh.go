@@ -180,6 +180,7 @@ func newCmdClusterMeshDisconnectWithHelm() *cobra.Command {
 }
 
 func newCmdClusterMeshPolicyDefaultClusterInspect() *cobra.Command {
+	ciliumNamespace := ""
 	namespace := ""
 	allNamespaces := false
 	output := status.OutputSummary
@@ -190,6 +191,9 @@ func newCmdClusterMeshPolicyDefaultClusterInspect() *cobra.Command {
 		Long:  ``,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var err error
+			if ciliumNamespace == "" {
+				ciliumNamespace = RootParams.Namespace
+			}
 			if namespace == "" {
 				if namespace, _, err = RootK8sClient.RESTClientGetter.ToRawKubeConfigLoader().Namespace(); err != nil {
 					namespace = metav1.NamespaceDefault
@@ -198,7 +202,7 @@ func newCmdClusterMeshPolicyDefaultClusterInspect() *cobra.Command {
 			if allNamespaces {
 				namespace = corev1.NamespaceAll
 			}
-			res, err := clustermesh.PolicyDefaultLocalClusterInspect(cmd.Context(), RootK8sClient, namespace)
+			res, err := clustermesh.PolicyDefaultLocalClusterInspect(cmd.Context(), RootK8sClient, ciliumNamespace, namespace)
 			if err != nil {
 				fatalf("Unable to inspect policy default local cluster: %s", err)
 			}
@@ -209,6 +213,7 @@ func newCmdClusterMeshPolicyDefaultClusterInspect() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().StringVar(&ciliumNamespace, "cilium-namespace", ciliumNamespace, "Namespace Cilium is running in")
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", namespace, "Namespace used for listing resources")
 	cmd.Flags().BoolVarP(&allNamespaces, "all-namespaces", "A", allNamespaces, "If present, list the resources across all namespace. Namespace in current context or specified with --namespace is ignored.")
 	cmd.Flags().StringVarP(&output, "output", "o", output, "Output format. One of: json, summary")
