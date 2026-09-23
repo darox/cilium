@@ -4,6 +4,10 @@
 package ipam
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
 	"net/netip"
 	"testing"
 
@@ -14,7 +18,17 @@ import (
 	apiMock "github.com/cilium/cilium/pkg/aws/api/mock"
 	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	v2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
+	"github.com/cilium/cilium/pkg/logging/logfields"
 )
+
+type assigningEC2API struct {
+	EC2API
+	assignedIPs []string
+}
+
+func (a assigningEC2API) AssignPrivateIpAddresses(context.Context, string, int32) ([]string, error) {
+	return a.assignedIPs, nil
+}
 
 // newWiredNode builds a *Node backed by the EC2 mock API with a single primary
 // ENI attached to instanceID and the manager resynced. The returned node is
@@ -116,6 +130,34 @@ func TestAllocateIPs_NoIPv6WhenNotRequested(t *testing.T) {
 	require.NoError(t, n.AllocateIPs(t.Context(), a))
 
 	require.Empty(t, attachedIPv6Prefixes(t, n, instances))
+}
+
+func TestAllocateIPsLogsSuccessfulExistingENIAssignment(t *testing.T) {
+	n, ec2api, _ := newWiredNode(t, "i-allocate-ipv4", "m5.large")
+	eniID := primaryENIID(t, n)
+	originalAPI := n.manager.ec2api
+	n.manager.ec2api = assigningEC2API{EC2API: originalAPI, assignedIPs: []string{"10.0.0.2"}}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil)).With(logfields.InstanceID, n.instanceID)
+	n.logger.Store(logger)
+
+	a := &nodemanager.AllocationAction{InterfaceID: eniID, PoolID: ipamTypes.PoolID(testSubnet.ID)}
+	a.IPv4.AvailableForAllocation = 2
+	require.NoError(t, n.AllocateIPs(t.Context(), a))
+
+	require.Contains(t, logs.String(), "Assigned IP addresses to existing ENI")
+	require.Contains(t, logs.String(), "node=node1")
+	require.Contains(t, logs.String(), "eniID="+eniID)
+	require.Contains(t, logs.String(), "subnetID="+testSubnet.ID)
+	require.Contains(t, logs.String(), "ipsToAllocate=2")
+	require.Contains(t, logs.String(), "allocated=1")
+
+	logs.Reset()
+	n.manager.ec2api = originalAPI
+	ec2api.SetMockError(apiMock.AssignPrivateIpAddresses, errors.New("assignment failed"))
+	require.Error(t, n.AllocateIPs(t.Context(), a))
+	require.NotContains(t, logs.String(), "Assigned IP addresses to existing ENI")
 }
 
 func TestCreateInterface_IPv6Only(t *testing.T) {
