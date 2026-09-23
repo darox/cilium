@@ -127,6 +127,14 @@ func TestIPAMLocalStateMetrics(t *testing.T) {
 	require.Equal(t, float64(1), attempts.WithLabelValues(string(IPv4), metricOutcomeOtherError).Get())
 }
 
+func TestReleaseIPPropagatesAllocatorError(t *testing.T) {
+	ipam := NewIPAM(NewIPAMParams{Logger: hivetest.Logger(t), AgentConfig: testDaemonConfig()})
+	ipam.ipv4Allocator = newFakePoolAllocator(map[string]string{"default": "10.0.0.0/30"})
+
+	err := ipam.ReleaseIP(netip.MustParseAddr("10.0.0.1"), "missing")
+	require.ErrorContains(t, err, "unknown pool")
+}
+
 func TestAllocatedIPDump(t *testing.T) {
 	fakeAddressing := fakenode.NewAddressing()
 	localNodeStore := node.NewTestLocalNodeStore(node.LocalNode{})

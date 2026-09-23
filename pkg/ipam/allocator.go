@@ -360,7 +360,9 @@ func (ipam *IPAM) releaseIPLocked(ip netip.Addr, pool Pool) error {
 			return ErrIPv4Disabled
 		}
 
-		allocator.Release(ip, pool)
+		if err := allocator.Release(ip, pool); err != nil {
+			return err
+		}
 	} else {
 		family = IPv6
 		allocator = ipam.ipv6Allocator
@@ -368,7 +370,9 @@ func (ipam *IPAM) releaseIPLocked(ip netip.Addr, pool Pool) error {
 			return ErrIPv6Disabled
 		}
 
-		allocator.Release(ip, pool)
+		if err := allocator.Release(ip, pool); err != nil {
+			return err
+		}
 	}
 	ipam.updateIPAMMetrics(family, allocator)
 
