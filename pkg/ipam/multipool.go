@@ -135,8 +135,8 @@ func (c *multiPoolAllocator) Dump() (map[Pool]sets.Set[netip.Addr], string) {
 	return c.manager.dump(c.family)
 }
 
-func (c *multiPoolAllocator) Capacity() uint64 {
-	return c.manager.capacity(c.family)
+func (c *multiPoolAllocator) Stats() AllocatorStats {
+	return c.manager.stats(c.family)
 }
 
 func (c *multiPoolAllocator) RestoreFinished() {

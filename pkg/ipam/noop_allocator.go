@@ -41,8 +41,8 @@ func (n *noOpAllocator) Dump() (map[Pool]sets.Set[netip.Addr], string) {
 	return nil, "delegated to plugin"
 }
 
-func (n *noOpAllocator) Capacity() uint64 {
-	return uint64(0)
+func (n *noOpAllocator) Stats() AllocatorStats {
+	return AllocatorStats{}
 }
 
 func (n *noOpAllocator) RestoreFinished() {

@@ -57,6 +57,13 @@ type AllocationResult struct {
 	SkipMasquerade bool
 }
 
+// AllocatorStats describes the current state of a local IP allocator.
+type AllocatorStats struct {
+	Capacity  uint64
+	Available uint64
+	Used      uint64
+}
+
 // Allocator is the interface for an IP allocator implementation
 type Allocator interface {
 	// Allocate allocates a specific IP or fails
@@ -82,9 +89,8 @@ type Allocator interface {
 	// of IPs allocated and overall health information if available.
 	Dump() (map[Pool]sets.Set[netip.Addr], string)
 
-	// Capacity returns the total IPAM allocator capacity (not the current
-	// available).
-	Capacity() uint64
+	// Stats returns the allocator's current capacity, available and used IPs.
+	Stats() AllocatorStats
 
 	// RestoreFinished marks the status of restoration as done
 	RestoreFinished()

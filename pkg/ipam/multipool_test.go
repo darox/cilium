@@ -583,8 +583,8 @@ func Test_MultiPoolManager_ReleaseAllCIDRs(t *testing.T) {
 
 		// Wait for manager to initialize and observe the pools
 		assert.EventuallyWithT(t, func(c *assert.CollectT) {
-			assert.Positive(c, mgr.capacity(IPv4))
-			assert.Positive(c, mgr.capacity(IPv6))
+			assert.Positive(c, mgr.stats(IPv4).Capacity)
+			assert.Positive(c, mgr.stats(IPv6).Capacity)
 		}, timeout, tick)
 
 		// Allocate one IPv4 and one IPv6 IP before restore is finished. Once restore

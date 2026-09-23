@@ -449,7 +449,6 @@ func (m *multiPoolManager) waitForPool(ctx context.Context, family Family, poolN
 
 func (m *multiPoolManager) ciliumNodeUpdated(newNode *ciliumv2.CiliumNode) {
 	m.poolsMutex.Lock()
-	defer m.poolsMutex.Unlock()
 
 	for _, pool := range m.poolsAccessor.FromResource(newNode).Allocated {
 		m.upsertPoolLocked(Pool(pool.Pool), pool.CIDRs, pool.AllowFirstIP, pool.AllowLastIP)
@@ -478,6 +477,14 @@ func (m *multiPoolManager) ciliumNodeUpdated(newNode *ciliumv2.CiliumNode) {
 		case m.staticIPUpdated <- struct{}{}:
 		default:
 		}
+	}
+	m.poolsMutex.Unlock()
+
+	if m.ipv4Enabled {
+		updateIPAMMetrics(IPv4, &multiPoolAllocator{manager: m, family: IPv4}, "")
+	}
+	if m.ipv6Enabled {
+		updateIPAMMetrics(IPv6, &multiPoolAllocator{manager: m, family: IPv6}, "")
 	}
 }
 
@@ -948,11 +955,11 @@ func (m *multiPoolManager) releaseIP(addr netip.Addr, poolName Pool, family Fami
 	return nil
 }
 
-func (m *multiPoolManager) capacity(family Family) uint64 {
+func (m *multiPoolManager) stats(family Family) AllocatorStats {
 	m.poolsMutex.Lock()
 	defer m.poolsMutex.Unlock()
 
-	var cap uint64
+	var stats AllocatorStats
 	for _, pool := range m.pools {
 		var p *cidrPool
 		switch family {
@@ -964,9 +971,12 @@ func (m *multiPoolManager) capacity(family Family) uint64 {
 		if p == nil {
 			continue
 		}
-		cap += uint64(p.capacity())
+		_, used, available, _, _ := p.dump()
+		stats.Available += uint64(available)
+		stats.Used += uint64(used)
 	}
-	return uint64(cap)
+	stats.Capacity = stats.Available + stats.Used
+	return stats
 }
 
 func (m *multiPoolManager) getNode() *ciliumv2.CiliumNode {

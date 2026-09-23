@@ -44,8 +44,9 @@ import (
 )
 
 var (
-	sharedNodeStore *nodeStore
-	initNodeStore   sync.Once
+	sharedNodeStore   *nodeStore
+	initNodeStore     sync.Once
+	errNoIPsAvailable = errors.New("no IPs currently available on the node")
 )
 
 const (
@@ -390,7 +391,12 @@ func (n *nodeStore) staticIPStatus() (requested bool, assigned string) {
 func (n *nodeStore) deleteLocalNodeResource() {
 	n.mutex.Lock()
 	n.ownNode = nil
+	allocators := append([]*crdAllocator(nil), n.allocators...)
 	n.mutex.Unlock()
+
+	for _, allocator := range allocators {
+		updateIPAMMetrics(allocator.family, allocator, "")
+	}
 }
 
 // updateLocalNodeResource is called when the CiliumNode resource representing
@@ -398,7 +404,6 @@ func (n *nodeStore) deleteLocalNodeResource() {
 // on the custom resource passed into the function.
 func (n *nodeStore) updateLocalNodeResource(node *ciliumv2.CiliumNode) {
 	n.mutex.Lock()
-	defer n.mutex.Unlock()
 
 	n.ownNode = node
 	n.allocationPoolSize[IPv4] = 0
@@ -500,6 +505,12 @@ func (n *nodeStore) updateLocalNodeResource(node *ciliumv2.CiliumNode) {
 
 	if releaseUpstreamSyncNeeded {
 		n.refreshTrigger.TriggerWithReason("excess IP release")
+	}
+	allocators := append([]*crdAllocator(nil), n.allocators...)
+	n.mutex.Unlock()
+
+	for _, allocator := range allocators {
+		updateIPAMMetrics(allocator.family, allocator, "")
 	}
 }
 
@@ -655,13 +666,13 @@ func (n *nodeStore) allocateNext(allocated ipamTypes.AllocationMap, family Famil
 		}
 	}
 
-	msg := "no IPs currently available on the node, allocation will be retried "
+	msg := "allocation will be retried "
 	if n.conf.IPAMMode() == ipamOption.IPAMCRD {
 		msg += "once IPs are added to CiliumNode spec.ipam.pool"
 	} else {
 		msg += "once Cilium Operator allocates more IPs"
 	}
-	return netip.Addr{}, nil, errors.New(msg)
+	return netip.Addr{}, nil, fmt.Errorf("%w, %s", errNoIPsAvailable, msg)
 }
 
 // totalPoolSize returns the total size of the allocation pool
@@ -888,10 +899,28 @@ func (a *crdAllocator) Dump() (map[Pool]sets.Set[netip.Addr], string) {
 	return map[Pool]sets.Set[netip.Addr]{PoolDefault(): allocs}, status
 }
 
-func (a *crdAllocator) Capacity() uint64 {
+func (a *crdAllocator) Stats() AllocatorStats {
 	a.mutex.RLock()
 	defer a.mutex.RUnlock()
-	return uint64(a.store.totalPoolSize(a.family))
+
+	a.store.mutex.RLock()
+	defer a.store.mutex.RUnlock()
+
+	stats := AllocatorStats{Used: uint64(len(a.allocated))}
+	if a.store.ownNode == nil {
+		return stats
+	}
+	for addr, ipInfo := range a.store.ownNode.Spec.IPAM.Pool {
+		if !addr.IsValid() || DeriveFamily(addr.Addr) != a.family {
+			continue
+		}
+		stats.Capacity++
+		if _, allocated := a.allocated[addr]; allocated || ipInfo.Owner != "" || a.store.isIPInReleaseHandshake(addr) {
+			continue
+		}
+		stats.Available++
+	}
+	return stats
 }
 
 // RestoreFinished marks the status of restoration as done

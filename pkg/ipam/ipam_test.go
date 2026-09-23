@@ -108,8 +108,15 @@ func (f fakePoolAllocator) Dump() (map[Pool]sets.Set[netip.Addr], string) {
 	return result, fmt.Sprintf("%d pools", len(f.pools))
 }
 
-func (f fakePoolAllocator) Capacity() uint64 {
-	return uint64(0)
+func (f fakePoolAllocator) Stats() AllocatorStats {
+	var stats AllocatorStats
+	for _, allocator := range f.pools {
+		poolStats := allocator.Stats()
+		stats.Capacity += poolStats.Capacity
+		stats.Available += poolStats.Available
+		stats.Used += poolStats.Used
+	}
+	return stats
 }
 
 func (f fakePoolAllocator) RestoreFinished() {}

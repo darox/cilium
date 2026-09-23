@@ -13,14 +13,18 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 
 	ipamOption "github.com/cilium/cilium/pkg/ipam/option"
+	"github.com/cilium/cilium/pkg/ipam/service/ipallocator"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/metrics"
 	"github.com/cilium/cilium/pkg/time"
 )
 
 const (
-	metricAllocate = "allocate"
-	metricRelease  = "release"
+	metricAllocate          = "allocate"
+	metricRelease           = "release"
+	metricOutcomeSuccess    = "success"
+	metricOutcomeExhausted  = "exhausted"
+	metricOutcomeOtherError = "error"
 )
 
 // Error definitions
@@ -38,6 +42,39 @@ var (
 
 type routingMetadataResolver interface {
 	ResolveRoutingMetadata(addr netip.Addr, pool Pool) (*AllocationResult, error)
+}
+
+func updateIPAMMetrics(family Family, allocator Allocator, cidr string) {
+	stats := allocator.Stats()
+	metrics.IPAMCapacity.WithLabelValues(string(family), cidr).Set(float64(stats.Capacity))
+	metrics.IPAMAvailable.WithLabelValues(string(family)).Set(float64(stats.Available))
+	metrics.IPAMUsed.WithLabelValues(string(family)).Set(float64(stats.Used))
+}
+
+func (ipam *IPAM) updateIPAMMetrics(family Family, allocator Allocator) {
+	var cidr string
+	if ipam.config.IPAMMode() == ipamOption.IPAMClusterPool || ipam.config.IPAMMode() == ipamOption.IPAMKubernetes {
+		if family == IPv4 {
+			cidr = ipam.nodeAddressing.IPv4().AllocationCIDR().String()
+		} else {
+			cidr = ipam.nodeAddressing.IPv6().AllocationCIDR().String()
+		}
+	}
+	updateIPAMMetrics(family, allocator, cidr)
+}
+
+func allocationOutcome(err error) string {
+	switch {
+	case err == nil:
+		return metricOutcomeSuccess
+	case errors.Is(err, ipallocator.ErrFull),
+		errors.Is(err, errAllCIDRsExhausted),
+		errors.Is(err, errNoIPsAvailable),
+		errors.Is(err, &ErrPoolNotReadyYet{}):
+		return metricOutcomeExhausted
+	default:
+		return metricOutcomeOtherError
+	}
 }
 
 func (ipam *IPAM) determineIPAMPool(owner string, family Family) (Pool, error) {
@@ -110,48 +147,42 @@ func (ipam *IPAM) allocateIP(ip netip.Addr, owner string, pool Pool, needSyncUps
 	}
 
 	family := IPv4
+	var allocator Allocator
 	if ip.Is4() {
-		if ipam.ipv4Allocator == nil {
+		allocator = ipam.ipv4Allocator
+		if allocator == nil {
 			err = ErrIPv4Disabled
 			return
 		}
 
 		if needSyncUpstream {
-			if result, err = ipam.ipv4Allocator.Allocate(ip, owner, pool); err != nil {
+			if result, err = allocator.Allocate(ip, owner, pool); err != nil {
 				return
 			}
 		} else {
-			if result, err = ipam.ipv4Allocator.AllocateWithoutSyncUpstream(ip, owner, pool); err != nil {
+			if result, err = allocator.AllocateWithoutSyncUpstream(ip, owner, pool); err != nil {
 				return
 			}
-		}
-		if ipam.config.IPAMMode() == ipamOption.IPAMClusterPool || ipam.config.IPAMMode() == ipamOption.IPAMKubernetes {
-			metrics.IPAMCapacity.WithLabelValues(string(family), ipam.nodeAddressing.IPv4().AllocationCIDR().String()).Set(float64(ipam.ipv4Allocator.Capacity()))
-		} else {
-			metrics.IPAMCapacity.WithLabelValues(string(family), "").Set(float64(ipam.ipv4Allocator.Capacity()))
 		}
 	} else {
 		family = IPv6
-		if ipam.ipv6Allocator == nil {
+		allocator = ipam.ipv6Allocator
+		if allocator == nil {
 			err = ErrIPv6Disabled
 			return
 		}
 
 		if needSyncUpstream {
-			if result, err = ipam.ipv6Allocator.Allocate(ip, owner, pool); err != nil {
+			if result, err = allocator.Allocate(ip, owner, pool); err != nil {
 				return
 			}
 		} else {
-			if result, err = ipam.ipv6Allocator.AllocateWithoutSyncUpstream(ip, owner, pool); err != nil {
+			if result, err = allocator.AllocateWithoutSyncUpstream(ip, owner, pool); err != nil {
 				return
 			}
-		}
-		if ipam.config.IPAMMode() == ipamOption.IPAMClusterPool || ipam.config.IPAMMode() == ipamOption.IPAMKubernetes {
-			metrics.IPAMCapacity.WithLabelValues(string(family), ipam.nodeAddressing.IPv6().AllocationCIDR().String()).Set(float64(ipam.ipv6Allocator.Capacity()))
-		} else {
-			metrics.IPAMCapacity.WithLabelValues(string(family), "").Set(float64(ipam.ipv6Allocator.Capacity()))
 		}
 	}
+	ipam.updateIPAMMetrics(family, allocator)
 
 	// If the allocator did not populate the pool, we assume it does not
 	// support IPAM pools and assign the default pool instead
@@ -176,18 +207,8 @@ func (ipam *IPAM) allocateNextFamily(family Family, owner string, pool Pool, nee
 	switch family {
 	case IPv6:
 		allocator = ipam.ipv6Allocator
-		if ipam.config.IPAMMode() == ipamOption.IPAMClusterPool || ipam.config.IPAMMode() == ipamOption.IPAMKubernetes {
-			metrics.IPAMCapacity.WithLabelValues(string(family), ipam.nodeAddressing.IPv6().AllocationCIDR().String()).Set(float64(ipam.ipv6Allocator.Capacity()))
-		} else {
-			metrics.IPAMCapacity.WithLabelValues(string(family), "").Set(float64(ipam.ipv6Allocator.Capacity()))
-		}
 	case IPv4:
 		allocator = ipam.ipv4Allocator
-		if ipam.config.IPAMMode() == ipamOption.IPAMClusterPool || ipam.config.IPAMMode() == ipamOption.IPAMKubernetes {
-			metrics.IPAMCapacity.WithLabelValues(string(family), ipam.nodeAddressing.IPv4().AllocationCIDR().String()).Set(float64(ipam.ipv4Allocator.Capacity()))
-		} else {
-			metrics.IPAMCapacity.WithLabelValues(string(family), "").Set(float64(ipam.ipv4Allocator.Capacity()))
-		}
 
 	default:
 		err = fmt.Errorf("unknown address \"%s\" family requested", family)
@@ -198,6 +219,10 @@ func (ipam *IPAM) allocateNextFamily(family Family, owner string, pool Pool, nee
 		err = fmt.Errorf("%s allocator not available", family)
 		return
 	}
+	defer func() {
+		ipam.updateIPAMMetrics(family, allocator)
+		metrics.IPAMAllocationAttempts.WithLabelValues(string(family), allocationOutcome(err)).Inc()
+	}()
 
 	if pool == "" {
 		pool, err = ipam.determineIPAMPool(owner, family)
@@ -328,30 +353,24 @@ func (ipam *IPAM) releaseIPLocked(ip netip.Addr, pool Pool) error {
 	}
 
 	family := IPv4
+	var allocator Allocator
 	if ip.Is4() {
-		if ipam.ipv4Allocator == nil {
+		allocator = ipam.ipv4Allocator
+		if allocator == nil {
 			return ErrIPv4Disabled
 		}
 
-		ipam.ipv4Allocator.Release(ip, pool)
-		if ipam.config.IPAMMode() == ipamOption.IPAMClusterPool || ipam.config.IPAMMode() == ipamOption.IPAMKubernetes {
-			metrics.IPAMCapacity.WithLabelValues(string(family), ipam.nodeAddressing.IPv4().AllocationCIDR().String()).Set(float64(ipam.ipv4Allocator.Capacity()))
-		} else {
-			metrics.IPAMCapacity.WithLabelValues(string(family), "").Set(float64(ipam.ipv4Allocator.Capacity()))
-		}
+		allocator.Release(ip, pool)
 	} else {
 		family = IPv6
-		if ipam.ipv6Allocator == nil {
+		allocator = ipam.ipv6Allocator
+		if allocator == nil {
 			return ErrIPv6Disabled
 		}
 
-		ipam.ipv6Allocator.Release(ip, pool)
-		if ipam.config.IPAMMode() == ipamOption.IPAMClusterPool || ipam.config.IPAMMode() == ipamOption.IPAMKubernetes {
-			metrics.IPAMCapacity.WithLabelValues(string(family), ipam.nodeAddressing.IPv6().AllocationCIDR().String()).Set(float64(ipam.ipv6Allocator.Capacity()))
-		} else {
-			metrics.IPAMCapacity.WithLabelValues(string(family), "").Set(float64(ipam.ipv6Allocator.Capacity()))
-		}
+		allocator.Release(ip, pool)
 	}
+	ipam.updateIPAMMetrics(family, allocator)
 
 	owner := ipam.releaseIPOwner(ip, pool)
 	ipam.logger.Debug(

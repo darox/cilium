@@ -155,6 +155,7 @@ func (ipam *IPAM) ConfigureAllocator(ctx context.Context) error {
 			ipam.ipv4RoutingMetadataResolver = v4Allocator
 		}
 
+		ipam.updateAllMetrics()
 		return nil
 	}
 
@@ -229,7 +230,17 @@ func (ipam *IPAM) ConfigureAllocator(ctx context.Context) error {
 		return fmt.Errorf("unknown IPAM backend %s", ipam.config.IPAMMode())
 	}
 
+	ipam.updateAllMetrics()
 	return nil
+}
+
+func (ipam *IPAM) updateAllMetrics() {
+	if ipam.ipv4Allocator != nil {
+		ipam.updateIPAMMetrics(IPv4, ipam.ipv4Allocator)
+	}
+	if ipam.ipv6Allocator != nil {
+		ipam.updateIPAMMetrics(IPv6, ipam.ipv6Allocator)
+	}
 }
 
 // getIPOwner returns the owner for an IP in a particular pool or the empty

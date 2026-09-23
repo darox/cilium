@@ -791,6 +791,9 @@ IPAM
 Name                                     Labels                                       Default    Description
 ======================================== ============================================ ========== ========================================================
 ``ipam_capacity``                        ``family``, ``cidr``                         Enabled    Total number of IPs in the IPAM pool labeled by family
+``ipam_available``                       ``family``                                   Enabled    Number of IPs currently available in the local IPAM allocator labeled by family
+``ipam_used``                            ``family``                                   Enabled    Number of IPs currently used in the local IPAM allocator labeled by family
+``ipam_allocation_attempts_total``       ``family``, ``outcome``                      Enabled    Number of local IPAM allocation attempts labeled by family and outcome
 ``ipam_events_total``                    ``action``, ``family``                       Enabled    Number of IPAM events received labeled by action and datapath family type
 ``ip_addresses``                         ``family``                                   Enabled    Number of allocated IP addresses
 ======================================== ============================================ ========== ========================================================

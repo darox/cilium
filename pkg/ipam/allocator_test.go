@@ -14,8 +14,12 @@ import (
 	"github.com/cilium/hive/hivetest"
 	"github.com/stretchr/testify/require"
 
+	iputil "github.com/cilium/cilium/pkg/ip"
+	ipamTypes "github.com/cilium/cilium/pkg/ipam/types"
 	ciliumv2 "github.com/cilium/cilium/pkg/k8s/apis/cilium.io/v2"
 	"github.com/cilium/cilium/pkg/k8s/resource"
+	agentMetrics "github.com/cilium/cilium/pkg/metrics"
+	metricPkg "github.com/cilium/cilium/pkg/metrics/metric"
 	"github.com/cilium/cilium/pkg/node"
 	fakenode "github.com/cilium/cilium/pkg/node/fake"
 )
@@ -55,6 +59,73 @@ func (f *fakeMTU) GetRouteMTU() int {
 }
 
 var mtuMock = fakeMTU{}
+
+func TestIPAMLocalStateMetrics(t *testing.T) {
+	capacity := metricPkg.NewGaugeVec(metricPkg.GaugeOpts{Name: "test_ipam_capacity"}, []string{agentMetrics.LabelDatapathFamily, agentMetrics.LabelCIDR})
+	available := metricPkg.NewGaugeVec(metricPkg.GaugeOpts{Name: "test_ipam_available"}, []string{agentMetrics.LabelDatapathFamily})
+	used := metricPkg.NewGaugeVec(metricPkg.GaugeOpts{Name: "test_ipam_used"}, []string{agentMetrics.LabelDatapathFamily})
+	attempts := metricPkg.NewCounterVec(metricPkg.CounterOpts{Name: "test_ipam_allocation_attempts_total"}, []string{agentMetrics.LabelDatapathFamily, agentMetrics.LabelOutcome})
+	events := metricPkg.NewCounterVec(metricPkg.CounterOpts{Name: "test_ipam_events_total"}, []string{agentMetrics.LabelAction, agentMetrics.LabelDatapathFamily})
+
+	oldCapacity, oldAvailable, oldUsed := agentMetrics.IPAMCapacity, agentMetrics.IPAMAvailable, agentMetrics.IPAMUsed
+	oldAttempts, oldEvents := agentMetrics.IPAMAllocationAttempts, agentMetrics.IPAMEvent
+	agentMetrics.IPAMCapacity, agentMetrics.IPAMAvailable, agentMetrics.IPAMUsed = capacity, available, used
+	agentMetrics.IPAMAllocationAttempts, agentMetrics.IPAMEvent = attempts, events
+	t.Cleanup(func() {
+		agentMetrics.IPAMCapacity, agentMetrics.IPAMAvailable, agentMetrics.IPAMUsed = oldCapacity, oldAvailable, oldUsed
+		agentMetrics.IPAMAllocationAttempts, agentMetrics.IPAMEvent = oldAttempts, oldEvents
+	})
+
+	conf := testDaemonConfig()
+	store := newFakeNodeStore(conf, t)
+	allocator := &crdAllocator{
+		logger:    hivetest.Logger(t),
+		allocated: ipamTypes.AllocationMap{},
+		family:    IPv4,
+		store:     store,
+		conf:      conf,
+	}
+	store.allocators = []*crdAllocator{allocator}
+	ipam := NewIPAM(NewIPAMParams{Logger: hivetest.Logger(t), AgentConfig: conf})
+	ipam.ipv4Allocator = allocator
+
+	first := iputil.AddrFrom(netip.MustParseAddr("10.0.0.1"))
+	second := iputil.AddrFrom(netip.MustParseAddr("10.0.0.2"))
+	node := newCiliumNode("node1", 0, 0, 0)
+	node.Spec.IPAM.Pool = ipamTypes.AllocationMap{first: {}, second: {}}
+	store.updateLocalNodeResource(node)
+
+	require.Equal(t, float64(2), capacity.WithLabelValues(string(IPv4), "").Get())
+	require.Equal(t, float64(2), available.WithLabelValues(string(IPv4)).Get())
+	require.Equal(t, float64(0), used.WithLabelValues(string(IPv4)).Get())
+
+	allocation, err := ipam.AllocateNextFamily(IPv4, "test-owner", PoolDefault())
+	require.NoError(t, err)
+	require.Equal(t, float64(1), available.WithLabelValues(string(IPv4)).Get())
+	require.Equal(t, float64(1), used.WithLabelValues(string(IPv4)).Get())
+	require.Equal(t, float64(1), attempts.WithLabelValues(string(IPv4), metricOutcomeSuccess).Get())
+
+	require.NoError(t, ipam.ReleaseIP(allocation.IP, allocation.IPPoolName))
+	require.Equal(t, float64(2), available.WithLabelValues(string(IPv4)).Get())
+	require.Equal(t, float64(0), used.WithLabelValues(string(IPv4)).Get())
+	require.Equal(t, float64(1), events.WithLabelValues(metricRelease, string(IPv4)).Get())
+
+	delete(node.Spec.IPAM.Pool, second)
+	store.updateLocalNodeResource(node)
+	require.Equal(t, float64(1), capacity.WithLabelValues(string(IPv4), "").Get())
+	require.Equal(t, float64(1), available.WithLabelValues(string(IPv4)).Get())
+
+	_, err = ipam.AllocateNextFamily(IPv4, "test-owner", PoolDefault())
+	require.NoError(t, err)
+	_, err = ipam.AllocateNextFamily(IPv4, "test-owner", PoolDefault())
+	require.ErrorIs(t, err, errNoIPsAvailable)
+	require.Equal(t, float64(1), attempts.WithLabelValues(string(IPv4), metricOutcomeExhausted).Get())
+
+	ipam.ipv4Allocator = newFakePoolAllocator(map[string]string{"default": "10.1.0.0/30"})
+	_, err = ipam.AllocateNextFamily(IPv4, "test-owner", "missing")
+	require.Error(t, err)
+	require.Equal(t, float64(1), attempts.WithLabelValues(string(IPv4), metricOutcomeOtherError).Get())
+}
 
 func TestAllocatedIPDump(t *testing.T) {
 	fakeAddressing := fakenode.NewAddressing()

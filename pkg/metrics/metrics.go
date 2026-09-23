@@ -470,9 +470,17 @@ var (
 	IPAMEvent = NoOpCounterVec
 
 	// IPAMCapacity tracks the total number of IPs that could be allocated. To
-	// get the current number of available IPs, it would be this metric
-	// subtracted by IPAMEvent{allocated}.
+	// get the current number of available IPs, use IPAMAvailable.
 	IPAMCapacity = NoOpGaugeVec
+
+	// IPAMAvailable tracks IPs currently available in the local allocator.
+	IPAMAvailable = NoOpGaugeVec
+
+	// IPAMUsed tracks IPs currently used in the local allocator.
+	IPAMUsed = NoOpGaugeVec
+
+	// IPAMAllocationAttempts tracks local allocation attempts by outcome.
+	IPAMAllocationAttempts = NoOpCounterVec
 
 	// KVstore events
 
@@ -691,6 +699,9 @@ type LegacyMetrics struct {
 	TerminatingEndpointsEvents              metric.Counter
 	IPAMEvent                               metric.Vec[metric.Counter]
 	IPAMCapacity                            metric.Vec[metric.Gauge]
+	IPAMAvailable                           metric.Vec[metric.Gauge]
+	IPAMUsed                                metric.Vec[metric.Gauge]
+	IPAMAllocationAttempts                  metric.Vec[metric.Counter]
 	KVStoreOperationsDuration               metric.Vec[metric.Observer]
 	KVStoreEventsQueueDuration              metric.Vec[metric.Observer]
 	KVStoreQuorumErrors                     metric.Vec[metric.Counter]
@@ -1102,6 +1113,27 @@ func NewLegacyMetrics() *LegacyMetrics {
 			Help:       "Total number of IPs in the IPAM pool labeled by family",
 		}, []string{LabelDatapathFamily, LabelCIDR}),
 
+		IPAMAvailable: metric.NewGaugeVec(metric.GaugeOpts{
+			ConfigName: Namespace + "_ipam_available",
+			Namespace:  Namespace,
+			Name:       "ipam_available",
+			Help:       "Number of IPs currently available in the local IPAM allocator labeled by family",
+		}, []string{LabelDatapathFamily}),
+
+		IPAMUsed: metric.NewGaugeVec(metric.GaugeOpts{
+			ConfigName: Namespace + "_ipam_used",
+			Namespace:  Namespace,
+			Name:       "ipam_used",
+			Help:       "Number of IPs currently used in the local IPAM allocator labeled by family",
+		}, []string{LabelDatapathFamily}),
+
+		IPAMAllocationAttempts: metric.NewCounterVec(metric.CounterOpts{
+			ConfigName: Namespace + "_ipam_allocation_attempts_total",
+			Namespace:  Namespace,
+			Name:       "ipam_allocation_attempts_total",
+			Help:       "Number of local IPAM allocation attempts labeled by family and outcome",
+		}, []string{LabelDatapathFamily, LabelOutcome}),
+
 		KVStoreOperationsDuration: metric.NewHistogramVec(metric.HistogramOpts{
 			ConfigName: Namespace + "_" + SubsystemKVStore + "_operations_duration_seconds",
 			Namespace:  Namespace,
@@ -1376,6 +1408,9 @@ func NewLegacyMetrics() *LegacyMetrics {
 	TerminatingEndpointsEvents = lm.TerminatingEndpointsEvents
 	IPAMEvent = lm.IPAMEvent
 	IPAMCapacity = lm.IPAMCapacity
+	IPAMAvailable = lm.IPAMAvailable
+	IPAMUsed = lm.IPAMUsed
+	IPAMAllocationAttempts = lm.IPAMAllocationAttempts
 	KVStoreOperationsDuration = lm.KVStoreOperationsDuration
 	KVStoreEventsQueueDuration = lm.KVStoreEventsQueueDuration
 	KVStoreQuorumErrors = lm.KVStoreQuorumErrors

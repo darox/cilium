@@ -77,8 +77,10 @@ func (h *hostScopeAllocator) Dump() (map[Pool]sets.Set[netip.Addr], string) {
 	return map[Pool]sets.Set[netip.Addr]{PoolDefault(): alloc}, status
 }
 
-func (h *hostScopeAllocator) Capacity() uint64 {
-	return ip.CountIPsInCIDR(netipx.PrefixIPNet(h.allocCIDR)).Uint64()
+func (h *hostScopeAllocator) Stats() AllocatorStats {
+	available := uint64(h.allocator.Free())
+	used := uint64(h.allocator.Used())
+	return AllocatorStats{Capacity: available + used, Available: available, Used: used}
 }
 
 // RestoreFinished marks the status of restoration as done
