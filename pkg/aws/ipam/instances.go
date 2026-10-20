@@ -64,6 +64,7 @@ type InstancesManager struct {
 	vpcID string
 	// mutex protects the fields below
 	mutex          lock.RWMutex
+	instanceLocks  map[string]*instanceLock
 	instances      *ipamTypes.InstanceMap
 	subnets        ipamTypes.SubnetMap
 	vpcs           ipamTypes.VirtualNetworkMap
@@ -72,6 +73,11 @@ type InstancesManager struct {
 	ec2api         EC2API
 	metadataapi    MetadataAPI
 	limitsGetter   *limits.LimitsGetter
+}
+
+type instanceLock struct {
+	mutex lock.Mutex
+	refs  int
 }
 
 // NewInstancesManager returns a new instances manager
@@ -279,24 +285,58 @@ func (m *InstancesManager) resync(ctx context.Context, instanceID string) (time.
 }
 
 func (m *InstancesManager) InstanceSync(ctx context.Context, instanceID string) (time.Time, error) {
-	// Instance incremental resync from different nodes should be executed in parallel,
-	// but must block the full API resync.
-	m.resyncLock.RLock()
-	defer m.resyncLock.RUnlock()
+	if instanceID == "" {
+		return m.Resync(ctx)
+	}
+
+	unlock := m.lockInstance(instanceID)
+	defer unlock()
 	return m.resync(ctx, instanceID)
+}
+
+func (m *InstancesManager) lockInstance(instanceID string) func() {
+	m.mutex.Lock()
+	if m.instanceLocks == nil {
+		m.instanceLocks = make(map[string]*instanceLock)
+	}
+	keyedLock := m.instanceLocks[instanceID]
+	if keyedLock == nil {
+		keyedLock = &instanceLock{}
+		m.instanceLocks[instanceID] = keyedLock
+	}
+	keyedLock.refs++
+	m.mutex.Unlock()
+
+	keyedLock.mutex.Lock()
+	m.resyncLock.RLock()
+
+	return func() {
+		m.resyncLock.RUnlock()
+		keyedLock.mutex.Unlock()
+
+		m.mutex.Lock()
+		keyedLock.refs--
+		if keyedLock.refs == 0 {
+			delete(m.instanceLocks, instanceID)
+		}
+		m.mutex.Unlock()
+	}
 }
 
 // UpdateENI updates the ENI definition of an ENI for a particular instance. If
 // the ENI is already known, the definition is updated, otherwise the ENI is
 // added to the instance.
 func (m *InstancesManager) UpdateENI(instanceID string, eni *types.ENI) {
-	m.resyncLock.RLock()
-	defer m.resyncLock.RUnlock()
+	unlock := m.lockInstance(instanceID)
+	defer unlock()
 
 	m.mutex.Lock()
-	eniRevision := eni
-	m.instances.Update(instanceID, eniRevision)
-	m.mutex.Unlock()
+	defer m.mutex.Unlock()
+	// Don't recreate a partial instance that was deleted while this update waited.
+	if !m.instances.Exists(instanceID) {
+		return
+	}
+	m.instances.Update(instanceID, eni)
 }
 
 func (m *InstancesManager) AddIPsToENI(instanceID string, eniID string, ips []string) {
@@ -308,8 +348,8 @@ func (m *InstancesManager) RemoveIPsFromENI(instanceID string, eniID string, ips
 }
 
 func (m *InstancesManager) modifyIPsToENI(instanceID string, eniID string, ips []string, isAdd bool) {
-	m.resyncLock.RLock()
-	defer m.resyncLock.RUnlock()
+	unlock := m.lockInstance(instanceID)
+	defer unlock()
 
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
@@ -376,8 +416,8 @@ func (m *InstancesManager) ForeachInstance(instanceID string, fn ipamTypes.Inter
 
 // DeleteInstance delete instance from m.instances
 func (m *InstancesManager) DeleteInstance(instanceID string) {
-	m.resyncLock.RLock()
-	defer m.resyncLock.RUnlock()
+	unlock := m.lockInstance(instanceID)
+	defer unlock()
 
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
