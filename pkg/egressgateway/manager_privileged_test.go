@@ -165,20 +165,24 @@ func setupEgressGatewayTestSuite(t *testing.T) *EgressGatewayTestSuite {
 	policyMap6 := egressmap.CreatePrivatePolicyMap6(lc, nil, egressmap.DefaultPolicyConfig)
 
 	var (
-		db          *statedb.DB
-		deviceTable statedb.Table[*tables.Device]
+		db            *statedb.DB
+		deviceTable   statedb.Table[*tables.Device]
+		nodeAddrTable statedb.Table[tables.NodeAddress]
 	)
 
 	// create a hive to provide statedb
 	h := hive.New(
 		cell.Provide(
 			tables.NewDeviceTable,
+			tables.NewNodeAddressTable,
 		),
 
 		cell.Invoke(func(db_ *statedb.DB,
-			dT statedb.RWTable[*tables.Device]) {
+			dT statedb.RWTable[*tables.Device],
+			nA statedb.RWTable[tables.NodeAddress]) {
 			db = db_
 			deviceTable = dT
+			nodeAddrTable = nA
 		}),
 	)
 
@@ -202,6 +206,7 @@ func setupEgressGatewayTestSuite(t *testing.T) *EgressGatewayTestSuite {
 		Sysctl:            k.sysctl,
 		DB:                db,
 		DeviceTable:       deviceTable,
+		NodeAddrTable:     nodeAddrTable,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, k.manager)

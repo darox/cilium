@@ -1,0 +1,161 @@
+hive start
+
+db/initialized
+
+# Add the k8s resources before the egress interface exists.
+k8s/add node1.yaml ciliumnode1.yaml
+k8s/add policy1.yaml
+k8s/add ciliumendpoint1.yaml
+
+# Without the egress interface, no egress IP can be found.
+egress/policy-maps-dump policymap.actual
+* cmp policymap.actual policymap.expected.1
+
+# Add the egress interface. The manager picks up its addresses.
+db/insert devices device-egw0.yaml
+db/cmp --timeout=10s node-addresses nodeaddrs.expected.1
+egress/policy-maps-dump policymap.actual
+* cmp policymap.actual policymap.expected.2
+
+# Change the address of the egress interface.
+cp device-egw0.yaml device-egw0_2.yaml
+sed 'addr: 10.10.0.1' 'addr: 10.10.0.2' device-egw0_2.yaml
+sed 'addr: fd00::10:10:0:1' 'addr: fd00::10:10:0:2' device-egw0_2.yaml
+db/insert devices device-egw0_2.yaml
+db/cmp --timeout=10s node-addresses nodeaddrs.expected.2
+egress/policy-maps-dump policymap.actual
+* cmp policymap.actual policymap.expected.3
+
+# Switch the policy to an egressIP that the node doesn't own yet.
+cp policy1.yaml policy1_2.yaml
+sed '    interface: egw0' '    egressIP: 203.0.113.10' policy1_2.yaml
+k8s/update policy1_2.yaml
+egress/policy-maps-dump policymap.actual
+* cmp policymap.actual policymap.expected.4
+
+# Add a local route that makes the node own the egressIP on egw0.
+db/insert routes routes.yaml
+db/cmp --timeout=10s node-addresses nodeaddrs.expected.3
+egress/policy-maps-dump policymap.actual
+* cmp policymap.actual policymap.expected.5
+
+-- policymap.expected.1 --
+source_ip=10.244.3.91 dest_cidr=0.0.0.0 egress_ip=0.0.0.0 egress_ifindex=0 gateway_ip=172.18.0.3
+source_ip=fd00:10:244:3::9c94 dest_cidr=:: egress_ip=:: egress_ifindex=0 gateway_ip=172.18.0.3
+-- policymap.expected.2 --
+source_ip=10.244.3.91 dest_cidr=0.0.0.0 egress_ip=10.10.0.1 egress_ifindex=1 gateway_ip=172.18.0.3
+source_ip=fd00:10:244:3::9c94 dest_cidr=:: egress_ip=fd00::10:10:0:1 egress_ifindex=1 gateway_ip=172.18.0.3
+-- policymap.expected.3 --
+source_ip=10.244.3.91 dest_cidr=0.0.0.0 egress_ip=10.10.0.2 egress_ifindex=1 gateway_ip=172.18.0.3
+source_ip=fd00:10:244:3::9c94 dest_cidr=:: egress_ip=fd00::10:10:0:2 egress_ifindex=1 gateway_ip=172.18.0.3
+-- policymap.expected.4 --
+source_ip=10.244.3.91 dest_cidr=0.0.0.0 egress_ip=0.0.0.0 egress_ifindex=0 gateway_ip=172.18.0.3
+source_ip=fd00:10:244:3::9c94 dest_cidr=:: egress_ip=:: egress_ifindex=0 gateway_ip=172.18.0.3
+-- policymap.expected.5 --
+source_ip=10.244.3.91 dest_cidr=0.0.0.0 egress_ip=203.0.113.10 egress_ifindex=0 gateway_ip=172.18.0.3
+source_ip=fd00:10:244:3::9c94 dest_cidr=:: egress_ip=fd00::10:10:0:2 egress_ifindex=0 gateway_ip=172.18.0.3
+-- nodeaddrs.expected.3 --
+Address                   NodePort Primary DeviceName
+10.10.0.2                 false    true    *
+10.10.0.2                 true     true    egw0
+203.0.113.10              false    false   egw0
+fd00::10:10:0:2           false    true    *
+fd00::10:10:0:2           true     true    egw0
+-- routes.yaml --
+# A local route for an IP that is not assigned to any device: table 255 (local),
+# type 2 (local), scope 254 (host), and no source address.
+table: 255
+type: 2
+scope: 254
+linkindex: 1
+dst: 203.0.113.10/32
+-- nodeaddrs.expected.1 --
+Address                   NodePort Primary DeviceName
+10.10.0.1                 false    true    *
+10.10.0.1                 true     true    egw0
+fd00::10:10:0:1           false    true    *
+fd00::10:10:0:1           true     true    egw0
+-- nodeaddrs.expected.2 --
+Address                   NodePort Primary DeviceName
+10.10.0.2                 false    true    *
+10.10.0.2                 true     true    egw0
+fd00::10:10:0:2           false    true    *
+fd00::10:10:0:2           true     true    egw0
+-- node1.yaml --
+apiVersion: v1
+kind: Node
+metadata:
+  name: localnode1
+  uid: c57b0909-b567-48a3-865a-c1d1a17b545d
+status:
+  addresses:
+  - address: 172.18.0.3
+    type: InternalIP
+-- ciliumnode1.yaml --
+apiVersion: cilium.io/v2
+kind: CiliumNode
+metadata:
+  generation: 1
+  labels:
+    kubernetes.io/hostname: kind-worker
+    foo: bar
+  name: localnode1
+  uid: 00000000-0000-0000-0000-000000000000
+spec:
+  addresses:
+  - ip: 172.18.0.3
+    type: InternalIP
+-- policy1.yaml --
+apiVersion: cilium.io/v2
+kind: CiliumEgressGatewayPolicy
+metadata:
+  generation: 1
+  name: policy1
+  uid: 00000000-0000-0000-0000-000000000000
+spec:
+  destinationCIDRs:
+  - 0.0.0.0/0
+  - ::/0
+  egressGateway:
+    interface: egw0
+    nodeSelector:
+      matchLabels:
+        kubernetes.io/hostname: kind-worker
+  excludedCIDRs: []
+  selectors:
+  - podSelector:
+      matchLabels:
+        foo: bar
+-- ciliumendpoint1.yaml --
+apiVersion: cilium.io/v2
+kind: CiliumEndpoint
+metadata:
+  generation: 1
+  labels:
+    name: client1
+    foo: bar
+  name: client1-795488bf5-2tplm
+  namespace: test1
+  uid: 7c22952d-25a0-409d-952c-60895b5c2a90
+status:
+  id: 2000
+  identity:
+    id: 1000
+    labels:
+    - k8s:foo=bar
+  networking:
+    addressing:
+    - ipv4: 10.244.3.91
+      ipv6: fd00:10:244:3::9c94
+    node: 172.18.0.5
+  state: ready
+-- device-egw0.yaml --
+index: 1
+name: egw0
+addrs:
+  - addr: 10.10.0.1
+  - addr: fd00::10:10:0:1
+type: veth
+flags: 1 # admin-up
+operstatus: up
+selected: true

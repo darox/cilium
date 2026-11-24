@@ -68,6 +68,7 @@ const (
 	eventDeleteEndpoint
 	eventUpdateNode
 	eventDeleteNode
+	eventUpdateDevices
 )
 
 type Config struct {
@@ -338,6 +339,10 @@ func (manager *Manager) processEvents(ctx context.Context) {
 	nodeEvents := manager.ciliumNodes.Events(ctx)
 	endpointEvents := manager.endpoints.Events(ctx, resource.WithRateLimiter(endpointsRateLimit))
 
+	txn := manager.db.ReadTxn()
+	_, devicesWatch := tables.SelectedDevices(manager.deviceTable, txn)
+	_, nodeAddrsWatch := manager.nodeAddrTable.AllWatch(txn)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -381,6 +386,14 @@ func (manager *Manager) processEvents(ctx context.Context) {
 			} else {
 				manager.handleEndpointEvent(event)
 			}
+
+		case <-devicesWatch:
+			_, devicesWatch = tables.SelectedDevices(manager.deviceTable, manager.db.ReadTxn())
+			manager.handleDevicesEvent()
+
+		case <-nodeAddrsWatch:
+			_, nodeAddrsWatch = manager.nodeAddrTable.AllWatch(manager.db.ReadTxn())
+			manager.handleDevicesEvent()
 		}
 	}
 }
@@ -544,6 +557,14 @@ func (manager *Manager) handleEndpointEvent(event resource.Event[*k8sTypes.Ciliu
 		manager.deleteEndpoint(endpoint)
 		event.Done(nil)
 	}
+}
+
+func (manager *Manager) handleDevicesEvent() {
+	manager.Lock()
+	defer manager.Unlock()
+
+	manager.setEventBitmap(eventUpdateDevices)
+	manager.reconciliationTrigger.TriggerWithReason("devices updated")
 }
 
 // handleNodeEvent takes care of node upserts and removals.
@@ -805,7 +826,7 @@ func (manager *Manager) reconcileLocked() {
 		manager.updatePoliciesMatchedEndpointIDs()
 	}
 
-	if manager.eventBitmapIsSet(eventK8sSyncDone, eventAddPolicy, eventDeletePolicy, eventUpdateNode, eventDeleteNode) {
+	if manager.eventBitmapIsSet(eventK8sSyncDone, eventAddPolicy, eventDeletePolicy, eventUpdateNode, eventDeleteNode, eventUpdateDevices) {
 		manager.regenerateGatewayConfigs()
 
 		// Sysctl updates are handled by a reconciler, with the initial update attempting to wait some time
